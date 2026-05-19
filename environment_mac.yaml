@@ -1,0 +1,92 @@
+name: aipl
+channels:
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.10
+
+  # Development
+  - black
+  - isort
+  - flake8
+  - conda-forge::pre-commit
+  - Cython<3.0
+
+  # pytorch
+  - pytorch::pytorch
+  - torchvision
+  - torchtext
+  - torchaudio
+
+  # NP Family
+  - numpy
+  - scipy
+  - scikit-image
+  - numba # For Robosuite
+
+  # IO
+  - imageio
+  - pillow
+  - pyyaml
+  - cloudpickle
+  - h5py
+  - absl-py
+  - pyparsing
+
+  # Plotting
+  - tensorboard
+  - pandas
+  - matplotlib
+  - seaborn
+
+  # Other
+  - pytest
+  - tqdm
+  - future
+
+  # For Robosuite (But install robosuite via source)
+  - numba
+
+  # macOS post-install steps (run once after conda env create):
+  #
+  # 1. Install MuJoCo app (provides MuJoCo.framework at runtime):
+  #    Download from https://github.com/deepmind/mujoco/releases → MuJoCo.app → /Applications/
+  #
+  # 2. Create GCC wrapper (gcc@14+ treats -Wincompatible-pointer-types as error):
+  #    printf '#!/bin/bash\nexec /opt/homebrew/bin/gcc-15 "$@" -Wno-incompatible-pointer-types\n' \
+  #      > ~/miniconda3/envs/aipl/bin/mujoco-gcc && chmod +x ~/miniconda3/envs/aipl/bin/mujoco-gcc
+  #
+  # 3. Set env vars (CC and SDKROOT needed for any future rebuild):
+  #    conda env config vars set \
+  #      CC=~/miniconda3/envs/aipl/bin/mujoco-gcc \
+  #      SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk \
+  #      -n aipl
+  #
+  # 4. Install mujoco-py manually (pip would upgrade Cython to 3.x which breaks build):
+  #    conda activate aipl
+  #    pip install "Cython<3.0"
+  #    pip install --no-build-isolation --no-deps "mujoco-py>=2.0,<2.2"
+  #
+  # 5. Patch MuJoCo.framework rpath into the compiled .so (DYLD_FRAMEWORK_PATH is stripped
+  #    by macOS SIP, so patching the binary directly is the only reliable approach):
+  #    install_name_tool -add_rpath /Applications/MuJoCo.app/Contents/Frameworks \
+  #      ~/miniconda3/envs/aipl/lib/python3.10/site-packages/mujoco_py/generated/cymj_2.1.2.14_310_macextensionbuilder_310.so
+  #    # Verify: python -c 'import mujoco_py; print("OK")'
+
+  # macOS: native GLFW library required by mujoco-py linker (-lglfw.3)
+  - conda-forge::glfw
+
+  # macOS: install via conda-forge to avoid clang build failures on Xcode 15+
+  - conda-forge::pybullet
+
+  - pip
+  - pip:
+      - gym==0.23.1
+      - gym-robotics==0.1.0
+      # mujoco-py requires Cython<3.0. pip's dependency resolver upgrades Cython to 3.x
+      # even with the conda pin (pip overrides conda). Use --no-deps to prevent this.
+      # Install manually after env creation (in order):
+      - "Cython<3.0"
+      - "mujoco-py>=2.0,<2.2"
+      - git+https://github.com/rlworkgroup/metaworld.git@master#egg=metaworld
+      - git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl

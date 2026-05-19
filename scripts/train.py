@@ -1,12 +1,19 @@
 import argparse
 import os
 import subprocess
+import sys
+from pathlib import Path
+
+# Add the project root directory to sys.path
+sys.path.append(str(Path(__file__).parent.parent))
 
 from research.utils.config import Config
 
 
 def try_wandb_setup(path, config):
-    wandb_api_key = os.getenv("WANDB_API_KEY")
+    # wandb_api_key = os.getenv("WANDB_API_KEY")
+    wandb_api_key = "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"
+    print("wandb_api_key: ", wandb_api_key)
     if wandb_api_key is not None and wandb_api_key != "":
         try:
             import wandb

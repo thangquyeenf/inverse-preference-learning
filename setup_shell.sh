@@ -1,7 +1,7 @@
 # Make sure we have the conda environment set up.
 CONDA_PATH=~/miniconda3/bin/activate
-ENV_NAME=ipl
-REPO_PATH=path/to/repository
+ENV_NAME=aipl
+REPO_PATH=~/workspace/programing/master/research/aipl/inverse-preference-learning
 USE_MUJOCO_PY=true
 WANDB_API_KEY="" # If you want to use wandb, set this to your API key.
 

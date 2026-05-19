@@ -17,13 +17,13 @@ from gym.envs import register
 # assert hasattr(<custom dm_env module>, 'SUITE')
 # suite._DOMAINS['<custom dm_env module>'] = <custom dm_env module>
 
-from metaworld.envs.mujoco.env_dict import ALL_V2_ENVIRONMENTS
+try:
+    from metaworld.envs.mujoco.env_dict import ALL_V2_ENVIRONMENTS
 
-# Add the meta world test environments.
-# For each one, register the different tasks.
-
-for env_name, env_cls in ALL_V2_ENVIRONMENTS.items():
-    ID = f"mw_{env_name}"
-    register(id=ID, entry_point="research.envs.metaworld:SawyerEnv", kwargs={"env_name": env_name})
+    for env_name, env_cls in ALL_V2_ENVIRONMENTS.items():
+        ID = f"mw_{env_name}"
+        register(id=ID, entry_point="research.envs.metaworld:SawyerEnv", kwargs={"env_name": env_name})
+except ImportError:
+    pass  # MetaWorld v2 not installed; metaworld envs unavailable
 
 del register
