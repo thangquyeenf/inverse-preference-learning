@@ -11,14 +11,13 @@ from research.utils.config import Config
 
 
 def try_wandb_setup(path, config):
-    # wandb_api_key = os.getenv("WANDB_API_KEY")
-    wandb_api_key = "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"
-    print("wandb_api_key: ", wandb_api_key)
+    wandb_api_key = os.getenv("WANDB_API_KEY")
     if wandb_api_key is not None and wandb_api_key != "":
         try:
             import wandb
         except:
             return
+        wandb.login(key=wandb_api_key)
         project_dir = os.path.dirname(os.path.dirname(__file__))
         wandb.init(
             project=os.path.basename(project_dir),
@@ -27,6 +26,13 @@ def try_wandb_setup(path, config):
             dir=os.path.join(os.path.dirname(project_dir), "wandb"),
         )
 
+def finish_wandb():
+    try:
+        import wandb
+    except ImportError:
+        return
+    if wandb.run is not None:
+        wandb.finish()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -53,3 +59,4 @@ if __name__ == "__main__":
     # Train the model
     trainer.set_model(model)
     trainer.train(args.path)
+    finish_wandb()
