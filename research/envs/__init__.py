@@ -18,12 +18,14 @@ from gym.envs import register
 # suite._DOMAINS['<custom dm_env module>'] = <custom dm_env module>
 
 try:
-    from metaworld.envs.mujoco.env_dict import ALL_V2_ENVIRONMENTS
+    from .metaworld import _MW_ENVS
 
-    for env_name, env_cls in ALL_V2_ENVIRONMENTS.items():
+    for env_name in _MW_ENVS.keys():
+        # Always register the -v2 names so configs and datasets stay unchanged under MetaWorld v3.
+        env_name = env_name[: -len("-v3")] + "-v2" if env_name.endswith("-v3") else env_name
         ID = f"mw_{env_name}"
         register(id=ID, entry_point="research.envs.metaworld:SawyerEnv", kwargs={"env_name": env_name})
 except ImportError:
-    pass  # MetaWorld v2 not installed; metaworld envs unavailable
+    pass  # MetaWorld not installed; metaworld envs unavailable
 
 del register
