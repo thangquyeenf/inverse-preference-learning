@@ -24,6 +24,8 @@ STATIC_CONFIG = REPO / "configs/metaworld/ipl_iql.yaml"
 # name -> overrides on top of the pool config. "static" uses the original paper setup instead.
 METHODS = {
     "static_e2": dict(),  # Paper baseline: first N pairs of the file, all labeled at step 0, ensemble 2.
+    "static_e5": dict(ensemble_size=5),  # Ablation: paper baseline with the larger ensemble.
+    "uniform_e2": dict(query_strategy="uniform", ensemble_size=2),  # Ablation: incremental uniform, ensemble 2.
     "uniform_e5": dict(query_strategy="uniform"),
     "std_e2": dict(query_strategy="std", ensemble_size=2),
     "std_e5": dict(query_strategy="std"),
@@ -42,10 +44,10 @@ def build_config(method, task, budget, seed, total_steps):
     fb = config["dataset_kwargs"]["feedback_kwargs"]
     fb["path"] = f"datasets/metaworld/{task}_10000.npz"
     fb["capacity"] = budget
+    overrides = dict(METHODS[method])
+    if "ensemble_size" in overrides:
+        config["network_kwargs"]["critic_kwargs"]["ensemble_size"] = overrides.pop("ensemble_size")
     if not is_static:
-        overrides = dict(METHODS[method])
-        if "ensemble_size" in overrides:
-            config["network_kwargs"]["critic_kwargs"]["ensemble_size"] = overrides.pop("ensemble_size")
         config["alg_kwargs"].update(overrides)
         config["alg_kwargs"]["max_feedback"] = budget
         config["alg_kwargs"]["num_uniform_feedback"] = int(0.2 * budget)
