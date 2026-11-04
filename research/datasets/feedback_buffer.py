@@ -162,6 +162,62 @@ class PairwiseComparisonDataset(torch.utils.data.IterableDataset):
             yield self._sample(cur_idxs)
 
 
+class PoolComparisonDataset(PairwiseComparisonDataset):
+    """
+    Pool-based active learning dataset. Loads a full comparison dataset as an unlabeled pool with hidden labels.
+    Only revealed pairs are stored in the (labeled) buffer and used for training.
+    The buffer capacity is the labeling budget.
+    """
+
+    def __init__(
+        self,
+        observation_space: gym.Space,
+        action_space: gym.Space,
+        path: str = None,
+        capacity: int = 1000,
+        pool_size: Optional[int] = None,
+        **kwargs,
+    ):
+        assert path is not None, "PoolComparisonDataset requires a path to the pool."
+        assert capacity is not None, "PoolComparisonDataset requires the budget as capacity."
+        super().__init__(observation_space, action_space, path=None, capacity=capacity, **kwargs)
+        with open(path, "rb") as f:
+            data = np.load(f)
+            data = {k: data[k] for k in data.keys()}
+        data = utils.nest_dict(data)
+        if pool_size is not None:
+            data = utils.get_from_batch(data, 0, pool_size)
+        lim = 1 - 1e-5
+        self.pool = dict(
+            obs_1=utils.remove_float64(data["obs_1"]),
+            obs_2=utils.remove_float64(data["obs_2"]),
+            action_1=np.clip(utils.remove_float64(data["action_1"]), -lim, lim),
+            action_2=np.clip(utils.remove_float64(data["action_2"]), -lim, lim),
+        )
+        self._hidden_labels = utils.remove_float64(data["label"])
+        self.pool_size = len(self._hidden_labels)
+        self._is_labeled = np.zeros(self.pool_size, dtype=bool)
+        print("[PoolComparisonDataset] pool of {} pairs, budget {}".format(self.pool_size, capacity))
+
+    @property
+    def unlabeled_idxs(self) -> np.ndarray:
+        return np.nonzero(~self._is_labeled)[0]
+
+    @property
+    def labeled_idxs(self) -> np.ndarray:
+        return np.nonzero(self._is_labeled)[0]
+
+    def get_pool(self, idxs: np.ndarray) -> Dict:
+        batch = {k: v[idxs] for k, v in self.pool.items()}
+        batch["idx"] = idxs
+        return batch
+
+    def reveal(self, idxs: np.ndarray) -> np.ndarray:
+        assert not self._is_labeled[idxs].any(), "Tried to reveal an already labeled pair."
+        self._is_labeled[idxs] = True
+        return self._hidden_labels[idxs]
+
+
 class EmptyDataset(torch.utils.data.IterableDataset):
     def __init__(self, observation_space: gym.Space, action_space: gym.Space, **kwargs) -> None:
         pass

@@ -6,11 +6,12 @@ import imageio
 import numpy as np
 import torch
 
-from research.datasets.feedback_buffer import PairwiseComparisonDataset
+from research.datasets.feedback_buffer import PairwiseComparisonDataset, PoolComparisonDataset
 from research.datasets.replay_buffer import ReplayBuffer
 from research.networks.base import ActorCriticValuePolicy
 from research.utils import utils
 
+from . import acquisition
 from .iql import iql_loss
 from .off_policy_algorithm import OffPolicyAlgorithm
 
@@ -40,6 +41,8 @@ class IPL_IQL(OffPolicyAlgorithm):
         target_clipping: bool = True,
         beta: float = 0.33,
         clip_score: float = 100.0,
+        query_strategy: str = "std",
+        query_kwargs: Optional[Dict] = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -67,6 +70,9 @@ class IPL_IQL(OffPolicyAlgorithm):
         self.feedback_schedule = feedback_schedule
         self.feedback_sample_multiplier = feedback_sample_multiplier
         self.num_uniform_feedback = num_uniform_feedback
+        assert query_strategy in acquisition.ACQUISITION_FNS, "Unknown query_strategy " + query_strategy
+        self.query_strategy = query_strategy
+        self.query_kwargs = {} if query_kwargs is None else query_kwargs
         self.reward_criterion = torch.nn.BCEWithLogitsLoss(reduction="none")
 
         # Initialize feedback parameters
@@ -110,10 +116,23 @@ class IPL_IQL(OffPolicyAlgorithm):
         self.optim["value"] = self.optim_class(self.network.value.parameters(), **value_kwargs)
 
     def _oracle_label(self, batch: Dict) -> Tuple[np.ndarray, Dict]:
-        label = 1.0 * (batch["reward_1"] < batch["reward_2"])
+        if self._use_pool:
+            label = self.dataset.feedback_dataset.reveal(batch["idx"])
+        else:
+            label = 1.0 * (batch["reward_1"] < batch["reward_2"])
         return label, {}
 
+    @property
+    def _use_pool(self) -> bool:
+        return isinstance(self.dataset.feedback_dataset, PoolComparisonDataset)
+
     def _get_queries(self, batch_size):
+        if self._use_pool:
+            # Sample candidates uniformly from the unlabeled pool without replacement.
+            unlabeled = self.dataset.feedback_dataset.unlabeled_idxs
+            idxs = np.random.choice(unlabeled, size=min(batch_size, len(unlabeled)), replace=False)
+            return self.dataset.feedback_dataset.get_pool(idxs)
+
         segment_size = self.dataset.feedback_dataset.segment_size
         batch = self.dataset.replay_buffer.sample(batch_size=2 * batch_size, stack=segment_size, pad=0)
         returns = np.sum(batch["reward"], axis=1)  # Note: use undiscounted reward to make sub-sections equivalent.
@@ -128,28 +147,15 @@ class IPL_IQL(OffPolicyAlgorithm):
         del batch  # ensure memory is freed
         return segment_batch
 
-    def _collect_feedback(self, step, total_steps) -> Dict:
-        all_metrics = {}
-        # Compute the amount of feedback to collect
-        if self.feedback_schedule == "linear":
-            batch_size = int(self.init_feedback_size * (total_steps - step) / total_steps)
-        elif self.feedback_schedule == "constant":
-            batch_size = self.init_feedback_size
-        else:
-            raise ValueError("Invalid Feedback Schedule Specified.")
-        feedback_left = self.max_feedback - self._total_feedback
-        batch_size = min(batch_size, feedback_left)
-        assert batch_size > 0, "Called _collect_feedback when we have no more budget left."
-
-        if self._total_feedback == 0 or self._total_feedback < self.num_uniform_feedback:
-            # Collect segments for the initial part.
-            queries = self._get_queries(batch_size)
-        else:
-            # Else, collect segments via disagreement
-            queries = self._get_queries(batch_size=int(batch_size * self.feedback_sample_multiplier))
-            feedback_batch = utils.to_device(utils.to_tensor(queries), self.device)
-            # Compute disagreement via the ensemble
-            with torch.no_grad():
+    def _score_queries(self, queries: Dict, chunk_size: int = 512) -> np.ndarray:
+        """Scores candidate pairs with the configured acquisition function. Returns shape (B,)."""
+        probs, log_prob_1, log_prob_2 = [], [], []
+        needs_policy = self.query_strategy in acquisition.NEEDS_POLICY
+        num_queries = queries["obs_1"].shape[0]
+        with torch.no_grad():
+            for i in range(0, num_queries, chunk_size):
+                chunk = {k: v[i : i + chunk_size] for k, v in queries.items() if k.startswith(("obs", "action"))}
+                feedback_batch = utils.to_device(utils.to_tensor(chunk), self.device)
                 # We need to repeat the steps for reward computation with the network here
                 # see train_step for more comments
                 B_fb, S_fb = feedback_batch["obs_1"].shape[:2]
@@ -186,7 +192,7 @@ class IPL_IQL(OffPolicyAlgorithm):
 
                 # Compute reward
                 qs = self.network.critic(obs, action)
-                reward = qs - self.dataset.replay_buffer.discount * self._compute_next_V(next_obs)
+                reward = qs - self.dataset.feedback_dataset.discount * self._compute_next_V(next_obs)
                 r1, r2 = torch.chunk(reward, 2, dim=1)  # Shape (E, B_fb * S_fb)
                 E, B_times_S = r1.shape
                 assert B_times_S == B_fb * S_fb
@@ -194,11 +200,44 @@ class IPL_IQL(OffPolicyAlgorithm):
                 r1 = r1.view(E, B_fb, S_fb)
                 r2 = r2.view(E, B_fb, S_fb)
                 logits = r2.sum(dim=2) - r1.sum(dim=2)  # Sum across sequence dim
+                probs.append(torch.sigmoid(logits).cpu().numpy())  # Shape (E, B)
 
-                probs = torch.sigmoid(logits).cpu().numpy()  # Shape (E, B)
+                if needs_policy:
+                    dist = self.network.actor(obs)
+                    lp = dist.log_prob(action).sum(dim=-1)  # Shape (2 * B * S)
+                    lp1, lp2 = torch.chunk(lp, 2, dim=0)
+                    log_prob_1.append(lp1.view(B_fb, S_fb).mean(dim=1).cpu().numpy())
+                    log_prob_2.append(lp2.view(B_fb, S_fb).mean(dim=1).cpu().numpy())
 
-            disagreement = np.std(probs, axis=0)  # Compute along the ensemble axis
-            top_k_index = (-disagreement).argsort()[:batch_size]
+        probs = np.concatenate(probs, axis=1)
+        kwargs = dict(self.query_kwargs)
+        if needs_policy:
+            kwargs.update(log_prob_1=np.concatenate(log_prob_1), log_prob_2=np.concatenate(log_prob_2))
+        return acquisition.ACQUISITION_FNS[self.query_strategy](probs, **kwargs)
+
+    def _collect_feedback(self, step, total_steps) -> Dict:
+        all_metrics = {}
+        # Compute the amount of feedback to collect
+        if self.feedback_schedule == "linear":
+            batch_size = int(self.init_feedback_size * (total_steps - step) / total_steps)
+        elif self.feedback_schedule == "constant":
+            batch_size = self.init_feedback_size
+        else:
+            raise ValueError("Invalid Feedback Schedule Specified.")
+        feedback_left = self.max_feedback - self._total_feedback
+        batch_size = min(batch_size, feedback_left)
+        assert batch_size > 0, "Called _collect_feedback when we have no more budget left."
+
+        if self._total_feedback == 0 or self._total_feedback < self.num_uniform_feedback or self.query_strategy == "uniform":
+            # Collect segments for the initial part.
+            queries = self._get_queries(batch_size)
+        else:
+            # Else, score a larger set of candidates and keep the top-k
+            queries = self._get_queries(batch_size=int(batch_size * self.feedback_sample_multiplier))
+            scores = self._score_queries(queries)
+            top_k_index = (-scores).argsort()[:batch_size]
+            all_metrics["query_score_mean"] = float(scores[top_k_index].mean())
+            all_metrics["query_score_candidates"] = float(scores.mean())
             # pare down the batch by the topk index
             queries = {k: v[top_k_index] for k, v in queries.items()}
 
@@ -209,12 +248,23 @@ class IPL_IQL(OffPolicyAlgorithm):
         self._total_feedback += feedback_added
         all_metrics["feedback"] = self._total_feedback
         all_metrics["feedback_this_itr"] = feedback_added
+        all_metrics["feedback_label_mean"] = float(np.mean(labels))
 
         if feedback_added == 0:
             return all_metrics
 
         self.dataset.feedback_dataset.add(queries, labels)
         return all_metrics
+
+    def _compute_next_V(self, next_obs):
+        # Mirrors the next_v computation in train_step: mean over the value ensemble, optionally clipped.
+        with torch.no_grad():
+            next_v = self.network.value(next_obs).mean(dim=0, keepdim=True)
+            if self.target_clipping:
+                discount = self.dataset.feedback_dataset.discount
+                q_lim = 1.0 / (self.chi2_coeff * (1 - discount))
+                next_v = torch.clamp(next_v, min=-q_lim, max=q_lim)
+        return next_v  # Shape (1, B)
 
     def _compute_actor_loss(self, obs, action, target_q):
         dist = self.network.actor(obs)
