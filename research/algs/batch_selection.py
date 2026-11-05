@@ -58,6 +58,74 @@ def badge_embedding(probs: np.ndarray, features: np.ndarray) -> np.ndarray:
     return ((probs - y_hat[None])[..., None] * features).mean(axis=0)
 
 
+def pair_embedding(obs_1: np.ndarray, obs_2: np.ndarray, action_1: np.ndarray, action_2: np.ndarray) -> np.ndarray:
+    """Model-free embedding of a pair: per-segment mean of (obs, action), both segments concatenated, (B, 2 * (S + A))."""
+    seg_1 = np.concatenate([obs_1.mean(axis=1), action_1.mean(axis=1)], axis=-1)
+    seg_2 = np.concatenate([obs_2.mean(axis=1), action_2.mean(axis=1)], axis=-1)
+    return np.concatenate([seg_1, seg_2], axis=-1).astype(np.float32)
+
+
+def _sq_dists(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    return np.maximum((a**2).sum(1)[:, None] - 2 * a @ b.T + (b**2).sum(1)[None], 0.0)
+
+
+def kmeans(x: np.ndarray, num_clusters: int, rng: np.random.Generator, iters: int = 20) -> np.ndarray:
+    """Lloyd's algorithm with k-means++ seeding. Returns the cluster assignment of every row of x."""
+    centers = x[select_kmeanspp(x - x.mean(axis=0), num_clusters, rng)]
+    for _ in range(iters):
+        assign = np.argmin(_sq_dists(x, centers), axis=1)
+        for c in range(num_clusters):
+            members = assign == c
+            if members.any():
+                centers[c] = x[members].mean(axis=0)
+    return np.argmin(_sq_dists(x, centers), axis=1)
+
+
+def typicality(x: np.ndarray, num_neighbors: int = 20) -> np.ndarray:
+    """Inverse mean distance to the num_neighbors nearest neighbors (TypiClust, Hacohen et al. 2022)."""
+    n = min(num_neighbors, len(x) - 1)
+    if n <= 0:
+        return np.ones(len(x))
+    typ = np.empty(len(x))
+    for start in range(0, len(x), 1024):
+        d = np.sqrt(_sq_dists(x[start : start + 1024], x))
+        typ[start : start + 1024] = 1.0 / (np.sort(d, axis=1)[:, 1 : n + 1].mean(axis=1) + 1e-8)
+    return typ
+
+
+def select_typiclust(
+    embedding: np.ndarray, labeled_embedding: np.ndarray, k: int, rng: np.random.Generator, max_clusters: int = 500
+) -> np.ndarray:
+    """
+    TypiClust: cluster labeled + unlabeled points into |L| + k clusters, then repeatedly take the most typical
+    unlabeled point of the largest cluster with the fewest labeled points.
+    The cluster count is capped at max_clusters for speed; capped clusters are revisited in the same order.
+    """
+    x = np.concatenate([labeled_embedding, embedding], axis=0)
+    x = _standardize(x)
+    num_labeled = len(labeled_embedding)
+    assign = kmeans(x, min(num_labeled + k, max_clusters, len(x)), rng)
+    labeled_counts = np.bincount(assign[:num_labeled], minlength=assign.max() + 1).astype(np.float64)
+    cand_assign = assign[num_labeled:]
+    sizes = np.bincount(cand_assign, minlength=len(labeled_counts)).astype(np.float64)
+    order = {c: [] for c in range(len(labeled_counts))}
+    for c in range(len(labeled_counts)):
+        members = np.where(cand_assign == c)[0]
+        if len(members) > 0:
+            typ = typicality(x[num_labeled + members])
+            order[c] = members[np.argsort(-typ)].tolist()
+    chosen = []
+    while len(chosen) < k:
+        avail = np.array([len(order[c]) > 0 for c in range(len(labeled_counts))])
+        # Fewest labeled points first, ties broken by the largest remaining cluster.
+        key = np.where(avail, labeled_counts * 1e6 - sizes, np.inf)
+        c = int(np.argmin(key))
+        chosen.append(order[c].pop(0))
+        labeled_counts[c] += 1
+        sizes[c] -= 1
+    return np.array(chosen)
+
+
 def select(method: str, stats: Dict[str, np.ndarray], k: int, rng: np.random.Generator, eta: float = 1.0) -> np.ndarray:
     """Returns k indices into the candidate set described by stats."""
     probs = stats["probs"]
@@ -69,6 +137,18 @@ def select(method: str, stats: Dict[str, np.ndarray], k: int, rng: np.random.Gen
         return select_topk(acquisition.std_score(probs), k)
     if method == "bald":
         return select_topk(acquisition.bald_score(probs), k)
+    if method == "mix_bald":
+        # Half of the batch at random, the other half by BALD among the rest.
+        random_part = rng.choice(num, size=k // 2, replace=False)
+        scores = acquisition.bald_score(probs).copy()
+        scores[random_part] = -np.inf
+        return np.concatenate([random_part, select_topk(scores, k - len(random_part))])
+    if method == "typiclust":
+        return select_typiclust(stats["raw"], stats["raw_labeled"], k, rng)
+    if method == "density_bald":
+        # Information density (Settles & Craven 2008): BALD weighted by typicality in the model-free embedding.
+        density = typicality(_standardize(stats["raw"]))
+        return select_topk(np.log(acquisition.bald_score(probs) + 1e-8) + eta * np.log(density), k)
     embedding = stats["features"].mean(axis=0)  # Ensemble-mean feature difference, (B, H)
     if method == "bald_kcenter":
         return select_kcenter(acquisition.bald_score(probs), k, embedding)
@@ -83,5 +163,7 @@ def select(method: str, stats: Dict[str, np.ndarray], k: int, rng: np.random.Gen
 
 
 METHODS = ["uniform", "std", "bald", "bald_kcenter", "badge", "policy_bald_kcenter"]
+ROUND2_METHODS = ["typiclust", "density_bald", "mix_bald"]
+NEEDS_RAW = {"typiclust", "density_bald"}
 NEEDS_POLICY = {"policy_bald_kcenter"}
 NEEDS_FEATURES = {"bald_kcenter", "badge", "policy_bald_kcenter"}

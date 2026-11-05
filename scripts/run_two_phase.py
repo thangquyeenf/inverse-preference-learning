@@ -109,6 +109,9 @@ def select(run_dir, task, budget, seed, methods, eta):
         with_policy=any(m in batch_selection.NEEDS_POLICY for m in todo),
         with_features=any(m in batch_selection.NEEDS_FEATURES for m in todo),
     )
+    if any(m in batch_selection.NEEDS_RAW for m in todo):
+        raw = batch_selection.pair_embedding(pool["obs_1"], pool["obs_2"], pool["action_1"], pool["action_2"])
+        stats["raw"], stats["raw_labeled"] = raw[candidates], raw[warmup]
     k = budget - len(warmup)
     for m in todo:
         rng = np.random.default_rng(seed)
@@ -121,13 +124,13 @@ def select(run_dir, task, budget, seed, methods, eta):
 
 
 if __name__ == "__main__":
-    from research.algs.batch_selection import METHODS
+    from research.algs.batch_selection import METHODS, ROUND2_METHODS
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=str, default="output/metaworld_two_phase")
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--methods", nargs="+", default=METHODS)
+    parser.add_argument("--methods", nargs="+", default=METHODS, help="Also accepts " + " ".join(ROUND2_METHODS))
     parser.add_argument("--tasks", nargs="+", default=["drawer-open", "button-press"])
     parser.add_argument("--budgets", nargs="+", type=int, default=[250, 500, 1000])
     parser.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3, 4, 5])
