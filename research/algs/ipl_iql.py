@@ -147,10 +147,16 @@ class IPL_IQL(OffPolicyAlgorithm):
         del batch  # ensure memory is freed
         return segment_batch
 
-    def _score_queries(self, queries: Dict, chunk_size: int = 512) -> np.ndarray:
-        """Scores candidate pairs with the configured acquisition function. Returns shape (B,)."""
-        probs, log_prob_1, log_prob_2 = [], [], []
-        needs_policy = self.query_strategy in acquisition.NEEDS_POLICY
+    def pair_statistics(
+        self, queries: Dict, with_policy: bool = False, with_features: bool = False, chunk_size: int = 512
+    ) -> Dict[str, np.ndarray]:
+        """
+        Computes per-pair statistics used by the acquisition functions.
+        Returns probs (E, B) of preferring segment 2, and optionally
+        log_prob_1 / log_prob_2 (B,): mean log pi(a|s) over each segment, and
+        features (E, B, H): difference of summed last-hidden-layer critic features (segment 2 - segment 1).
+        """
+        stats = dict(probs=[], log_prob_1=[], log_prob_2=[], features=[])
         num_queries = queries["obs_1"].shape[0]
         with torch.no_grad():
             for i in range(0, num_queries, chunk_size):
@@ -200,20 +206,37 @@ class IPL_IQL(OffPolicyAlgorithm):
                 r1 = r1.view(E, B_fb, S_fb)
                 r2 = r2.view(E, B_fb, S_fb)
                 logits = r2.sum(dim=2) - r1.sum(dim=2)  # Sum across sequence dim
-                probs.append(torch.sigmoid(logits).cpu().numpy())  # Shape (E, B)
+                stats["probs"].append(torch.sigmoid(logits).cpu().numpy())  # Shape (E, B)
 
-                if needs_policy:
+                if with_policy:
                     dist = self.network.actor(obs)
                     lp = dist.log_prob(action).sum(dim=-1)  # Shape (2 * B * S)
                     lp1, lp2 = torch.chunk(lp, 2, dim=0)
-                    log_prob_1.append(lp1.view(B_fb, S_fb).mean(dim=1).cpu().numpy())
-                    log_prob_2.append(lp2.view(B_fb, S_fb).mean(dim=1).cpu().numpy())
+                    stats["log_prob_1"].append(lp1.view(B_fb, S_fb).mean(dim=1).cpu().numpy())
+                    stats["log_prob_2"].append(lp2.view(B_fb, S_fb).mean(dim=1).cpu().numpy())
 
-        probs = np.concatenate(probs, axis=1)
+                if with_features:
+                    # Output of the last hidden layer of every critic ensemble member, shape (E, 2 * B * S, H)
+                    phi = self.network.critic.q.net[:-1](torch.cat((obs, action), dim=-1))
+                    phi1, phi2 = torch.chunk(phi, 2, dim=1)
+                    H = phi.shape[-1]
+                    x = phi2.view(E, B_fb, S_fb, H).sum(dim=2) - phi1.view(E, B_fb, S_fb, H).sum(dim=2)
+                    stats["features"].append(x.cpu().numpy())
+
+        out = dict(probs=np.concatenate(stats["probs"], axis=1))
+        if with_policy:
+            out["log_prob_1"] = np.concatenate(stats["log_prob_1"])
+            out["log_prob_2"] = np.concatenate(stats["log_prob_2"])
+        if with_features:
+            out["features"] = np.concatenate(stats["features"], axis=1)
+        return out
+
+    def _score_queries(self, queries: Dict) -> np.ndarray:
+        """Scores candidate pairs with the configured acquisition function. Returns shape (B,)."""
+        stats = self.pair_statistics(queries, with_policy=self.query_strategy in acquisition.NEEDS_POLICY)
         kwargs = dict(self.query_kwargs)
-        if needs_policy:
-            kwargs.update(log_prob_1=np.concatenate(log_prob_1), log_prob_2=np.concatenate(log_prob_2))
-        return acquisition.ACQUISITION_FNS[self.query_strategy](probs, **kwargs)
+        kwargs.update({k: v for k, v in stats.items() if k != "probs"})
+        return acquisition.ACQUISITION_FNS[self.query_strategy](stats["probs"], **kwargs)
 
     def _collect_feedback(self, step, total_steps) -> Dict:
         all_metrics = {}
