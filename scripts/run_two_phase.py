@@ -112,6 +112,13 @@ def select(run_dir, task, budget, seed, methods, eta):
     if any(m in batch_selection.NEEDS_RAW for m in todo):
         raw = batch_selection.pair_embedding(pool["obs_1"], pool["obs_2"], pool["action_1"], pool["action_2"])
         stats["raw"], stats["raw_labeled"] = raw[candidates], raw[warmup]
+    if any(m in batch_selection.NEEDS_PROXY for m in todo):
+        from research.algs import proxy_reward
+
+        with np.load(sel_dir / "warmup.npz") as data:
+            labeled = {k: data[k] for k in POOL_KEYS}  # Only the warm-start labels are revealed.
+        members = proxy_reward.train_proxy(labeled, seed=seed)
+        stats["proxy_probs"] = proxy_reward.proxy_probs(members, {k: v[candidates] for k, v in pool.items()})
     k = budget - len(warmup)
     for m in todo:
         rng = np.random.default_rng(seed)

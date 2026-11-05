@@ -143,6 +143,11 @@ def select(method: str, stats: Dict[str, np.ndarray], k: int, rng: np.random.Gen
         scores = acquisition.bald_score(probs).copy()
         scores[random_part] = -np.inf
         return np.concatenate([random_part, select_topk(scores, k - len(random_part))])
+    if method == "proxy_bald":
+        return select_topk(acquisition.bald_score(stats["proxy_probs"]), k)
+    if method == "proxy_density_bald":
+        density = typicality(_standardize(stats["raw"]))
+        return select_topk(np.log(acquisition.bald_score(stats["proxy_probs"]) + 1e-8) + eta * np.log(density), k)
     if method == "typiclust":
         return select_typiclust(stats["raw"], stats["raw_labeled"], k, rng)
     if method == "density_bald":
@@ -163,7 +168,8 @@ def select(method: str, stats: Dict[str, np.ndarray], k: int, rng: np.random.Gen
 
 
 METHODS = ["uniform", "std", "bald", "bald_kcenter", "badge", "policy_bald_kcenter"]
-ROUND2_METHODS = ["typiclust", "density_bald", "mix_bald"]
-NEEDS_RAW = {"typiclust", "density_bald"}
+ROUND2_METHODS = ["proxy_bald", "proxy_density_bald", "typiclust", "density_bald", "mix_bald"]
+NEEDS_RAW = {"typiclust", "density_bald", "proxy_density_bald"}
+NEEDS_PROXY = {"proxy_bald", "proxy_density_bald"}  # Scored by an explicit reward ensemble, see proxy_reward.py
 NEEDS_POLICY = {"policy_bald_kcenter"}
 NEEDS_FEATURES = {"bald_kcenter", "badge", "policy_bald_kcenter"}
