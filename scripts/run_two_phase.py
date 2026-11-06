@@ -119,6 +119,10 @@ def select(run_dir, task, budget, seed, methods, eta):
             labeled = {k: data[k] for k in POOL_KEYS}  # Only the warm-start labels are revealed.
         members = proxy_reward.train_proxy(labeled, seed=seed)
         stats["proxy_probs"] = proxy_reward.proxy_probs(members, {k: v[candidates] for k, v in pool.items()})
+        for i in (1, 2):
+            stats[f"proxy_return_{i}"] = proxy_reward.segment_returns(
+                members, pool[f"obs_{i}"][candidates], pool[f"action_{i}"][candidates]
+            )
     k = budget - len(warmup)
     for m in todo:
         rng = np.random.default_rng(seed)
@@ -131,13 +135,13 @@ def select(run_dir, task, budget, seed, methods, eta):
 
 
 if __name__ == "__main__":
-    from research.algs.batch_selection import METHODS, ROUND2_METHODS
+    from research.algs.batch_selection import METHODS, ROUND2_METHODS, ROUND3_METHODS
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=str, default="output/metaworld_two_phase")
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--methods", nargs="+", default=METHODS, help="Also accepts " + " ".join(ROUND2_METHODS))
+    parser.add_argument("--methods", nargs="+", default=METHODS, help="Also accepts " + " ".join(ROUND2_METHODS + ROUND3_METHODS))
     parser.add_argument("--tasks", nargs="+", default=["drawer-open", "button-press"])
     parser.add_argument("--budgets", nargs="+", type=int, default=[250, 500, 1000])
     parser.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3, 4, 5])

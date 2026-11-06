@@ -56,6 +56,16 @@ def train_proxy(
 
 
 @torch.no_grad()
+def segment_returns(members, obs: np.ndarray, action: np.ndarray, chunk_size: int = 1000) -> np.ndarray:
+    """Predicted segment return sum_t r(s_t, a_t) under each member, shape (E, B)."""
+    x = _inputs(obs, action)
+    return np.stack(
+        [torch.cat([net(x[i : i + chunk_size]).sum(dim=(1, 2)) for i in range(0, len(x), chunk_size)]).numpy()
+         for net in members]
+    )
+
+
+@torch.no_grad()
 def proxy_probs(members, pairs: Dict[str, np.ndarray], chunk_size: int = 1000) -> np.ndarray:
     """P(segment 2 preferred) under each member, shape (E, B)."""
     x_1, x_2 = _inputs(pairs["obs_1"], pairs["action_1"]), _inputs(pairs["obs_2"], pairs["action_2"])

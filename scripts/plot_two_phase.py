@@ -31,6 +31,8 @@ METHOD_STYLE = {
     "typiclust": ("TypiClust", "#eb6834", "-", "^"),
     "density_bald": ("BALD × density", "#2a78d6", "-", "D"),
     "mix_bald": ("½ uniform + ½ BALD", "#1baf7a", "-", "v"),
+    "proxy_top": ("Proxy-RM top return", "#eda100", "-", "P"),
+    "mix_proxy_top": ("½ uniform + ½ proxy top", "#e87ba4", "-", "X"),
 }
 TASK_NAMES = {"drawer-open": "Drawer Open", "button-press": "Button Press"}
 INK, MUTED, GRID = "#0b0b0b", "#52514e", "#e5e4e0"
