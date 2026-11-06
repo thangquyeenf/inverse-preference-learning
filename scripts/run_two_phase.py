@@ -43,7 +43,7 @@ def save_subset(task, idxs, path):
         np.savez(path, **{k: data[k][idxs] for k in POOL_KEYS})
 
 
-def train_config(task, data_path, seed, ensemble_size, total_steps, eval_freq):
+def train_config(task, data_path, seed, ensemble_size, total_steps, eval_freq, replay_pool=False):
     with open(STATIC_CONFIG) as f:
         config = copy.deepcopy(yaml.safe_load(f))
     config["eval_env"] = f"mw_{task}-v2"
@@ -54,6 +54,9 @@ def train_config(task, data_path, seed, ensemble_size, total_steps, eval_freq):
     fb["capacity"] = None
     config["trainer_kwargs"]["total_steps"] = total_steps
     config["trainer_kwargs"]["eval_freq"] = eval_freq
+    if replay_pool:  # V, the policy and the chi^2 term also train on the unlabeled pool.
+        config["dataset_kwargs"]["replay_class"] = "SegmentPoolReplay"
+        config["dataset_kwargs"]["replay_kwargs"]["path"] = str(pool_path(task))
     return config
 
 
@@ -149,6 +152,8 @@ if __name__ == "__main__":
     parser.add_argument("--eta", type=float, default=1.0)
     parser.add_argument("--phase1-steps", type=int, default=30000)
     parser.add_argument("--phase2-steps", type=int, default=200000)
+    parser.add_argument("--replay-pool", action="store_true",
+                        help="Phase 2 also trains V, the policy and chi^2 on the unlabeled pool (writes phase2_replay/)")
     args = parser.parse_args()
 
     # Order by seed first so partial sweeps still cover every configuration.
@@ -174,8 +179,8 @@ if __name__ == "__main__":
     def phase2(job):
         (t, b, s), m = job
         data = run_dir(t, b, s) / "selection" / f"{m}.npz"
-        config = train_config(t, data, s, 2, args.phase2_steps, 2500)
-        return train(run_dir(t, b, s) / "phase2" / m, config, args.device)
+        config = train_config(t, data, s, 2, args.phase2_steps, 2500, replay_pool=args.replay_pool)
+        return train(run_dir(t, b, s) / ("phase2_replay" if args.replay_pool else "phase2") / m, config, args.device)
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         print(f"Phase 1: {len(cells)} runs", flush=True)

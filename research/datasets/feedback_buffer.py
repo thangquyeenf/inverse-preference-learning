@@ -218,6 +218,46 @@ class PoolComparisonDataset(PairwiseComparisonDataset):
         return self._hidden_labels[idxs]
 
 
+class SegmentPoolReplay(torch.utils.data.IterableDataset):
+    """
+    Unlabeled transitions from every segment of a comparison pool, used as the replay data of ReplayAndFeedbackBuffer.
+    With it, the value function, policy and chi^2 term of IPL see the whole pool while the preference loss only sees
+    the labeled pairs, so a query selection method chooses labels and not training data.
+    """
+
+    def __init__(
+        self,
+        observation_space: gym.Space,
+        action_space: gym.Space,
+        path: str = None,
+        discount: float = 0.99,
+        batch_size: int = 256,
+        **kwargs,
+    ):
+        assert path is not None, "SegmentPoolReplay requires a path to the pool."
+        with open(path, "rb") as f:
+            data = np.load(f)
+            obs = np.concatenate([data["obs_1"], data["obs_2"]], axis=0)
+            action = np.concatenate([data["action_1"], data["action_2"]], axis=0)
+        lim = 1 - 1e-5
+        self.obs = utils.remove_float64(obs[:, :-1].reshape(-1, obs.shape[-1]))
+        self.next_obs = utils.remove_float64(obs[:, 1:].reshape(-1, obs.shape[-1]))
+        self.action = np.clip(utils.remove_float64(action[:, :-1].reshape(-1, action.shape[-1])), -lim, lim)
+        self.discount = discount
+        self.batch_size = batch_size
+        print("[SegmentPoolReplay] {} unlabeled transitions".format(len(self.obs)))
+
+    def __iter__(self):
+        while True:
+            idxs = np.random.randint(0, len(self.obs), size=self.batch_size)
+            yield dict(
+                obs=self.obs[idxs],
+                action=self.action[idxs],
+                next_obs=self.next_obs[idxs],
+                discount=self.discount * np.ones(self.batch_size, dtype=np.float32),
+            )
+
+
 class EmptyDataset(torch.utils.data.IterableDataset):
     def __init__(self, observation_space: gym.Space, action_space: gym.Space, **kwargs) -> None:
         pass
