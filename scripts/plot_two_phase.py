@@ -26,8 +26,8 @@ METHOD_STYLE = {
     "bald_kcenter": ("BALD + k-center", "#eda100", "-", "s"),
     "badge": ("BADGE", "#1baf7a", "-", "^"),
     "policy_bald_kcenter": ("Policy BALD + k-center (A2)", "#e87ba4", "-", "D"),
-    "proxy_bald": ("Proxy-RM BALD (ours)", "#6250d6", "-", "o"),
-    "proxy_density_bald": ("Proxy-RM BALD × density (ours)", "#008300", "-", "s"),
+    "proxy_bald": ("Proxy-RM BALD", "#6250d6", "-", "o"),
+    "proxy_density_bald": ("Proxy-RM BALD × density", "#008300", "-", "s"),
     "typiclust": ("TypiClust", "#eb6834", "-", "^"),
     "density_bald": ("BALD × density", "#2a78d6", "-", "D"),
     "mix_bald": ("½ uniform + ½ BALD", "#1baf7a", "-", "v"),
@@ -125,17 +125,15 @@ def plot_paired(paired, out, methods, name="paired_vs_uniform.png"):
             row = sub[(sub["method"] == method) & (sub["budget"] == budget)].iloc[0]
             ax.errorbar(row["delta"], i, xerr=[[row["delta"] - row["lo"]], [row["hi"] - row["delta"]]], color=color,
                         marker=marker, ms=8, capsize=3, lw=2, mec="#fcfcfb", mew=1.5)
-            ax.text(hi + 0.02 * (hi - lo), i, f"{row['delta']:+.2f}", va="center", fontsize=8.5, color=INK)
-        ax.set_xlim(lo - 0.05 * (hi - lo), hi + 0.22 * (hi - lo))
-        title = "All budgets" if budget == "all" else f"{budget} labels"
-        n = int(sub[sub["budget"] == budget]["n"].iloc[0])
-        ax.set_title(f"{title} (n={n})", fontsize=10.5, loc="left", color=INK)
+            ax.text(hi + 0.02 * (hi - lo), i, f"{row['delta']:+.2f} (n={row['n']})", va="center", fontsize=8.5, color=INK)
+        ax.set_xlim(lo - 0.05 * (hi - lo), hi + 0.42 * (hi - lo))
+        ax.set_title("All budgets" if budget == "all" else f"{budget} labels", fontsize=10.5, loc="left", color=INK)
         _style(ax)
         ax.grid(axis="x", color=GRID, lw=0.8)
         ax.grid(axis="y", visible=False)
     axes[0, 0].set_yticks(range(len(methods)), [METHOD_STYLE[m][0] for m in methods])
     axes[0, 0].invert_yaxis()
-    fig.supxlabel("Success difference to uniform, paired by seed, both tasks (mean, 95% CI)", color=MUTED, fontsize=10)
+    fig.supxlabel("Success difference to uniform, paired by seed, both tasks (mean, 95% CI; n = matched runs)", color=MUTED, fontsize=10)
     fig.tight_layout()
     path = os.path.join(out, name)
     fig.savefig(path, dpi=200, facecolor="#fcfcfb")
