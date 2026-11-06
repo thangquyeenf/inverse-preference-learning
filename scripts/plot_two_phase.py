@@ -166,8 +166,12 @@ if __name__ == "__main__":
 
     round1 = ["uniform", "std", "bald", "bald_kcenter", "badge", "policy_bald_kcenter"]
     round2 = ["uniform", "bald", "proxy_bald", "proxy_density_bald", "density_bald", "typiclust", "mix_bald"]
+    round3 = ["uniform", "proxy_bald", "mix_bald", "proxy_top", "mix_proxy_top"]
     print("Saved", plot_budget(runs, args.out, round1, name="round1_success_vs_budget.png"))
     print("Saved", plot_paired(paired[paired["metric"] == "last10"], args.out, round1, name="round1_paired.png"))
     if any(m in runs["method"].unique() for m in round2[2:]):
         print("Saved", plot_budget(runs, args.out, round2, name="round2_success_vs_budget.png"))
         print("Saved", plot_paired(paired[paired["metric"] == "last10"], args.out, round2, name="round2_paired.png"))
+    if any(m in runs["method"].unique() for m in round3[3:]):
+        print("Saved", plot_budget(runs, args.out, round3, name="round3_success_vs_budget.png"))
+        print("Saved", plot_paired(paired[paired["metric"] == "last10"], args.out, round3, name="round3_paired.png"))
