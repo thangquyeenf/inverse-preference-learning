@@ -5,6 +5,7 @@ Every condition trains on the same unlabeled pool transitions as phase 2 with --
   iql_zero           IQL with reward 0 (advantage-weighted behavior cloning of the pool)
   iql_random         IQL with a fixed U(0, 1) reward per transition
   ipl_random_labels  IPL with the replay pool and `budget` uniform pairs whose labels are replaced by coin flips
+  ipl_uniform        the same pairs with their true labels (the uniform baseline without phase 1, used to screen tasks)
 A task where these reach the success of IPL with real labels cannot tell selection methods apart.
 Results go to <out>/<task>/seed<s>/<condition>/ and compare with phase2_replay/uniform of run_two_phase.py.
 
@@ -23,7 +24,7 @@ import numpy as np
 sys.path.append(str(Path(__file__).parent))
 from run_two_phase import POOL_KEYS, pool_path, train, train_config  # noqa: E402
 
-CONDITIONS = ("iql_zero", "iql_random", "ipl_random_labels")
+CONDITIONS = ("iql_zero", "iql_random", "ipl_random_labels", "ipl_uniform")
 
 
 def iql_config(task, seed, total_steps, eval_freq, reward):
@@ -38,12 +39,13 @@ def iql_config(task, seed, total_steps, eval_freq, reward):
     return config
 
 
-def random_label_subset(task, budget, seed, path):
+def uniform_subset(task, budget, seed, path, random_labels):
     rng = np.random.default_rng(seed)
     with np.load(pool_path(task)) as data:
         idxs = rng.choice(len(data["label"]), size=budget, replace=False)
         subset = {k: data[k][idxs] for k in POOL_KEYS}
-    subset["label"] = rng.integers(0, 2, size=budget).astype(subset["label"].dtype)
+    if random_labels:
+        subset["label"] = rng.integers(0, 2, size=budget).astype(subset["label"].dtype)
     np.savez(path, **subset)
 
 
@@ -53,8 +55,8 @@ if __name__ == "__main__":
     parser.add_argument("--tasks", nargs="+",
                         default=["drawer-open", "button-press", "door-close", "plate-slide", "sweep-into"])
     parser.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3])
-    parser.add_argument("--conditions", nargs="+", default=list(CONDITIONS), choices=CONDITIONS)
-    parser.add_argument("--budget", type=int, default=1000, help="Pairs for ipl_random_labels")
+    parser.add_argument("--conditions", nargs="+", default=list(CONDITIONS[:3]), choices=CONDITIONS)
+    parser.add_argument("--budget", type=int, default=1000, help="Pairs for the ipl_ conditions")
     parser.add_argument("--steps", type=int, default=200000)
     parser.add_argument("--jobs", type=int, default=9)
     parser.add_argument("--device", type=str, default="cpu")
@@ -64,10 +66,10 @@ if __name__ == "__main__":
     def run(job):
         task, seed, condition = job
         path = Path(args.out) / task / f"seed{seed}" / condition
-        if condition == "ipl_random_labels":
+        if condition.startswith("ipl_"):
             path.mkdir(parents=True, exist_ok=True)
-            data = path / "random_labels.npz"
-            random_label_subset(task, args.budget, seed, data)
+            data = path / "labels.npz"
+            uniform_subset(task, args.budget, seed, data, random_labels=condition == "ipl_random_labels")
             config = train_config(task, data, seed, 2, args.steps, eval_freq, replay_pool=True)
         else:
             config = iql_config(task, seed, args.steps, eval_freq, reward=condition[len("iql_"):])
