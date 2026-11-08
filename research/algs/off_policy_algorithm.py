@@ -3,7 +3,7 @@ from abc import abstractmethod
 import gym
 import numpy as np
 
-from research.datasets.feedback_buffer import ReplayAndFeedbackBuffer
+from research.datasets.feedback_buffer import ReplayAndFeedbackBuffer, SegmentPoolReplay
 from research.datasets.replay_buffer import ReplayBuffer
 from research.envs.base import Empty
 
@@ -20,7 +20,8 @@ class OffPolicyAlgorithm(Algorithm):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        assert issubclass(self.dataset_class, (ReplayBuffer, ReplayAndFeedbackBuffer))
+        # SegmentPoolReplay is a fixed offline pool, only valid with offline_steps = -1.
+        assert issubclass(self.dataset_class, (ReplayBuffer, ReplayAndFeedbackBuffer, SegmentPoolReplay))
         self.offline_steps = offline_steps
         self.env_freq = env_freq
         self.random_steps = random_steps
