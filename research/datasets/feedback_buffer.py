@@ -232,9 +232,14 @@ class SegmentPoolReplay(torch.utils.data.IterableDataset):
         path: str = None,
         discount: float = 0.99,
         batch_size: int = 256,
+        reward: Optional[str] = None,
+        reward_seed: int = 0,
         **kwargs,
     ):
+        """reward: None (no reward key, for IPL), "zero" or "random" (fixed U(0, 1) per transition) for an IQL
+        trivial-reward control that shows how much a task can be solved from the pool data without any preference."""
         assert path is not None, "SegmentPoolReplay requires a path to the pool."
+        assert reward in (None, "zero", "random"), "Unknown trivial reward " + str(reward)
         with open(path, "rb") as f:
             data = np.load(f)
             obs = np.concatenate([data["obs_1"], data["obs_2"]], axis=0)
@@ -245,17 +250,25 @@ class SegmentPoolReplay(torch.utils.data.IterableDataset):
         self.action = np.clip(utils.remove_float64(action[:, :-1].reshape(-1, action.shape[-1])), -lim, lim)
         self.discount = discount
         self.batch_size = batch_size
-        print("[SegmentPoolReplay] {} unlabeled transitions".format(len(self.obs)))
+        self.reward = None
+        if reward == "zero":
+            self.reward = np.zeros(len(self.obs), dtype=np.float32)
+        elif reward == "random":
+            self.reward = np.random.default_rng(reward_seed).uniform(size=len(self.obs)).astype(np.float32)
+        print("[SegmentPoolReplay] {} unlabeled transitions, reward {}".format(len(self.obs), reward))
 
     def __iter__(self):
         while True:
             idxs = np.random.randint(0, len(self.obs), size=self.batch_size)
-            yield dict(
+            batch = dict(
                 obs=self.obs[idxs],
                 action=self.action[idxs],
                 next_obs=self.next_obs[idxs],
                 discount=self.discount * np.ones(self.batch_size, dtype=np.float32),
             )
+            if self.reward is not None:
+                batch["reward"] = self.reward[idxs]
+            yield batch
 
 
 class EmptyDataset(torch.utils.data.IterableDataset):
