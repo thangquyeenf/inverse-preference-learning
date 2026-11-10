@@ -32,10 +32,11 @@ BASE_ENV = dict(os.environ)
 
 STATIC_CONFIG = REPO / "configs/metaworld/ipl_iql.yaml"
 POOL_KEYS = ("obs_1", "obs_2", "action_1", "action_2", "label")
+POOL_TAG = ""  # Set by --pool-tag, e.g. "_bt20" for a pool written by scripts/make_noisy_pool.py
 
 
 def pool_path(task):
-    return REPO / f"datasets/metaworld/{task}_10000.npz"
+    return REPO / f"datasets/metaworld/{task}_10000{POOL_TAG}.npz"
 
 
 def save_subset(task, idxs, path):
@@ -154,7 +155,12 @@ if __name__ == "__main__":
     parser.add_argument("--phase2-steps", type=int, default=200000)
     parser.add_argument("--replay-pool", action="store_true",
                         help="Phase 2 also trains V, the policy and chi^2 on the unlabeled pool (writes phase2_replay/)")
+    parser.add_argument("--pool-tag", type=str, default="",
+                        help="Use datasets/metaworld/<task>_10000<tag>.npz, e.g. noisy labels from make_noisy_pool.py")
     args = parser.parse_args()
+    POOL_TAG = args.pool_tag
+    for t in args.tasks:
+        assert pool_path(t).exists(), f"missing pool {pool_path(t)}"
 
     # Order by seed first so partial sweeps still cover every configuration.
     cells = [(t, b, s) for s, t, b in itertools.product(args.seeds, args.tasks, args.budgets)]
