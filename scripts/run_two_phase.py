@@ -12,6 +12,9 @@ Example:
     python scripts/run_two_phase.py --out output/metaworld_two_phase --jobs 9
     python scripts/run_two_phase.py --out /tmp/smoke --tasks drawer-open --budgets 250 --seeds 1 \
         --phase1-steps 500 --phase2-steps 500
+    python scripts/run_two_phase.py --domain robomimic --pool-tag _human --tasks lift can --budgets 100 250 \
+        --out output/robomimic_two_phase --replay-pool
+On Robomimic the pools come from scripts/make_robomimic_pool.py and the replay data is always every demo of the hdf5.
 """
 import argparse
 import copy
@@ -30,13 +33,27 @@ sys.path.append(str(REPO))
 # Importing research sets MUJOCO_GL in this process; children must start from the original environment.
 BASE_ENV = dict(os.environ)
 
-STATIC_CONFIG = REPO / "configs/metaworld/ipl_iql.yaml"
+STATIC_CONFIGS = dict(metaworld=REPO / "configs/metaworld/ipl_iql.yaml", robomimic=REPO / "configs/robomimic/ipl_iql.yaml")
 POOL_KEYS = ("obs_1", "obs_2", "action_1", "action_2", "label")
+DOMAIN = "metaworld"  # Set by --domain
 POOL_TAG = ""  # Set by --pool-tag, e.g. "_bt20" for a pool written by scripts/make_noisy_pool.py
+ROBOMIMIC_DATASET_TYPE = "mh"
+ROBOMIMIC_HORIZON = 400  # robomimic's evaluation horizon for Lift and Can
 
 
 def pool_path(task):
+    if DOMAIN == "robomimic":  # POOL_TAG is "_human" or "_<n>" (dense-oracle labels)
+        return REPO / f"datasets/robomimic_pool/{task}_{ROBOMIMIC_DATASET_TYPE}{POOL_TAG}.npz"
     return REPO / f"datasets/metaworld/{task}_10000{POOL_TAG}.npz"
+
+
+def robomimic_hdf5(task):
+    return str(REPO / f"datasets/robomimic/{task}/{ROBOMIMIC_DATASET_TYPE}/low_dim_v15.hdf5")
+
+
+def pool_size(task):
+    with np.load(pool_path(task)) as data:
+        return len(data["label"])
 
 
 def save_subset(task, idxs, path):
@@ -45,9 +62,8 @@ def save_subset(task, idxs, path):
 
 
 def train_config(task, data_path, seed, ensemble_size, total_steps, eval_freq, replay_pool=False):
-    with open(STATIC_CONFIG) as f:
+    with open(STATIC_CONFIGS[DOMAIN]) as f:
         config = copy.deepcopy(yaml.safe_load(f))
-    config["eval_env"] = f"mw_{task}-v2"
     config["seed"] = seed
     config["network_kwargs"]["critic_kwargs"]["ensemble_size"] = ensemble_size
     fb = config["dataset_kwargs"]["feedback_kwargs"]
@@ -55,6 +71,15 @@ def train_config(task, data_path, seed, ensemble_size, total_steps, eval_freq, r
     fb["capacity"] = None
     config["trainer_kwargs"]["total_steps"] = total_steps
     config["trainer_kwargs"]["eval_freq"] = eval_freq
+    if DOMAIN == "robomimic":
+        # The paper's setup for the 500-query mh datasets. The replay data is every demo, labeled or not,
+        # so robomimic runs always match the --replay-pool variant of MetaWorld.
+        config["eval_env_kwargs"] = dict(path=robomimic_hdf5(task), horizon=ROBOMIMIC_HORIZON)
+        config["dataset_kwargs"]["replay_kwargs"]["path"] = robomimic_hdf5(task)
+        fb["segment_size"] = 100
+        fb["subsample_size"] = 64
+        return config
+    config["eval_env"] = f"mw_{task}-v2"
     if replay_pool:  # V, the policy and the chi^2 term also train on the unlabeled pool.
         config["dataset_kwargs"]["replay_class"] = "SegmentPoolReplay"
         config["dataset_kwargs"]["replay_kwargs"]["path"] = str(pool_path(task))
@@ -153,12 +178,17 @@ if __name__ == "__main__":
     parser.add_argument("--eta", type=float, default=1.0)
     parser.add_argument("--phase1-steps", type=int, default=30000)
     parser.add_argument("--phase2-steps", type=int, default=200000)
+    parser.add_argument("--eval-freq", type=int, default=2500, help="Phase 2 evaluation period")
+    parser.add_argument("--domain", type=str, default="metaworld", choices=list(STATIC_CONFIGS))
     parser.add_argument("--replay-pool", action="store_true",
                         help="Phase 2 also trains V, the policy and chi^2 on the unlabeled pool (writes phase2_replay/)")
     parser.add_argument("--pool-tag", type=str, default="",
                         help="Use datasets/metaworld/<task>_10000<tag>.npz, e.g. noisy labels from make_noisy_pool.py")
     args = parser.parse_args()
     POOL_TAG = args.pool_tag
+    DOMAIN = args.domain
+    if DOMAIN == "robomimic":
+        assert args.replay_pool, "robomimic always trains on every demo; pass --replay-pool so outputs go to phase2_replay/"
     for t in args.tasks:
         assert pool_path(t).exists(), f"missing pool {pool_path(t)}"
 
@@ -172,7 +202,7 @@ if __name__ == "__main__":
         sel_dir.mkdir(parents=True, exist_ok=True)
         if not (sel_dir / "warmup.npz").exists():
             rng = np.random.default_rng(1000 * s + b)
-            warmup = rng.choice(10000, size=int(args.warmup_frac * b), replace=False)
+            warmup = rng.choice(pool_size(t), size=int(args.warmup_frac * b), replace=False)
             np.save(sel_dir / "warmup_idx.npy", warmup)
             save_subset(t, warmup, sel_dir / "warmup.npz")
         config = train_config(t, sel_dir / "warmup.npz", s, 5, args.phase1_steps, max(args.phase1_steps // 3, 1))
@@ -185,7 +215,7 @@ if __name__ == "__main__":
     def phase2(job):
         (t, b, s), m = job
         data = run_dir(t, b, s) / "selection" / f"{m}.npz"
-        config = train_config(t, data, s, 2, args.phase2_steps, 2500, replay_pool=args.replay_pool)
+        config = train_config(t, data, s, 2, args.phase2_steps, args.eval_freq, replay_pool=args.replay_pool)
         return train(run_dir(t, b, s) / ("phase2_replay" if args.replay_pool else "phase2") / m, config, args.device)
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:

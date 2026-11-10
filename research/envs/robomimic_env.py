@@ -1,3 +1,5 @@
+from typing import Optional
+
 import gym
 import h5py
 import numpy as np
@@ -7,8 +9,11 @@ from robosuite.wrappers import GymWrapper
 
 
 class RoboMimicEnv(gym.Env):
-    def __init__(self, path):
+    def __init__(self, path, horizon: Optional[int] = None):
         env_meta = file_utils.get_env_metadata_from_dataset(dataset_path=path)
+        if horizon is not None:
+            # robosuite defaults to 1000 steps; robomimic evaluates Lift / Can with 400.
+            env_meta["env_kwargs"]["horizon"] = horizon
         env = env_utils.create_env_from_metadata(
             env_meta=env_meta,
             env_name=env_meta["env_name"],
@@ -31,16 +36,34 @@ class RoboMimicEnv(gym.Env):
         ]
         self.env = GymWrapper(env, keys=keys)
         self._max_episode_steps = self.env.horizon
-        self.observation_space = self.env.observation_space
-        self.action_space = self.env.action_space
+        self.observation_space = gym.spaces.Box(
+            low=self.env.observation_space.low,
+            high=self.env.observation_space.high,
+            dtype=self.env.observation_space.dtype,
+        )
+        self.action_space = gym.spaces.Box(
+            low=self.env.action_space.low,
+            high=self.env.action_space.high,
+            dtype=self.env.action_space.dtype,
+        )
 
     def step(self, action: np.ndarray):
-        observation, reward, done, info = self.env.step(action)
+        out = self.env.step(action)
+        if len(out) == 5:  # robosuite >= 1.5 follows the gymnasium API
+            observation, reward, terminated, truncated, info = out
+            done = terminated or truncated
+        else:
+            observation, reward, done, info = out
 
-        if self.env._check_success():
+        success = bool(self.env._check_success())
+        info["success"] = success
+        if success:
             done = True
 
         return observation, reward, done, info
 
     def reset(self, *args, **kwargs):
-        return self.env.reset(*args, **kwargs)
+        out = self.env.reset(*args, **kwargs)
+        if isinstance(out, tuple):  # gymnasium returns (obs, info)
+            out = out[0]
+        return out
