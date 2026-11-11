@@ -126,6 +126,15 @@ def select_typiclust(
     return np.array(chosen)
 
 
+def proxy_delta_score(stats: Dict[str, np.ndarray]) -> np.ndarray:
+    """Disagreement of the proxy members on which segment is better (in the spirit of OPRIDE, Yang et al. 2026): the std
+    over members of R(sigma^2) - R(sigma^1). Unlike BALD it is measured on the return difference, not on a saturating
+    probability, so it does not favor near ties. Each member's difference is divided by its std over the candidates, so
+    members with a larger reward scale do not dominate."""
+    diff = stats["proxy_return_2"] - stats["proxy_return_1"]  # (E, B)
+    return (diff / (diff.std(axis=1, keepdims=True) + 1e-8)).std(axis=0)
+
+
 def select(method: str, stats: Dict[str, np.ndarray], k: int, rng: np.random.Generator, eta: float = 1.0) -> np.ndarray:
     """Returns k indices into the candidate set described by stats."""
     probs = stats["probs"]
@@ -157,6 +166,14 @@ def select(method: str, stats: Dict[str, np.ndarray], k: int, rng: np.random.Gen
         random_part = rng.choice(num, size=k // 2, replace=False)
         best[random_part] = -np.inf
         return np.concatenate([random_part, select_topk(best, k - len(random_part))])
+    if method == "proxy_delta":
+        return select_topk(proxy_delta_score(stats), k)
+    if method == "proxy_top_delta":
+        # Keep the PROXY_TOP_PREFILTER * k pairs with the highest predicted best return (the exploitation filter of
+        # proxy_top), then take the k on which the members disagree most about the better segment.
+        best = np.maximum(stats["proxy_return_1"].mean(axis=0), stats["proxy_return_2"].mean(axis=0))
+        keep = select_topk(best, min(num, PROXY_TOP_PREFILTER * k))
+        return keep[select_topk(proxy_delta_score(stats)[keep], k)]
     if method == "typiclust":
         return select_typiclust(stats["raw"], stats["raw_labeled"], k, rng)
     if method == "density_bald":
@@ -179,7 +196,12 @@ def select(method: str, stats: Dict[str, np.ndarray], k: int, rng: np.random.Gen
 METHODS = ["uniform", "std", "bald", "bald_kcenter", "badge", "policy_bald_kcenter"]
 ROUND2_METHODS = ["proxy_bald", "proxy_density_bald", "typiclust", "density_bald", "mix_bald"]
 ROUND3_METHODS = ["proxy_top", "mix_proxy_top"]
+# Multi-round variants select in MULTIROUND[m][1] equal chunks with MULTIROUND[m][0], retraining the proxy on the labels
+# revealed so far before each chunk (run_two_phase.select_multiround). IPL is still trained once on the final set.
+MULTIROUND = {"proxy_top_r4": ("proxy_top", 4), "proxy_top_delta_r4": ("proxy_top_delta", 4)}
+ROUND9_METHODS = ["proxy_delta", "proxy_top_delta", *MULTIROUND]
+PROXY_TOP_PREFILTER = 3
 NEEDS_RAW = {"typiclust", "density_bald", "proxy_density_bald"}
-NEEDS_PROXY = {"proxy_bald", "proxy_density_bald", "proxy_top", "mix_proxy_top"}  # Scored by an explicit reward ensemble, see proxy_reward.py
+NEEDS_PROXY = {"proxy_bald", "proxy_density_bald", "proxy_top", "mix_proxy_top", "proxy_delta", "proxy_top_delta"}  # Scored by an explicit reward ensemble, see proxy_reward.py
 NEEDS_POLICY = {"policy_bald_kcenter"}
 NEEDS_FEATURES = {"bald_kcenter", "badge", "policy_bald_kcenter"}
