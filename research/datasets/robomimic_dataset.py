@@ -20,9 +20,14 @@ class RobomimicDataset(ReplayBuffer):
     See https://github.com/csmile-1006/PreferenceTransformer/JaxPref/reward_transform.py#L437
     """
 
-    def __init__(self, *args, eps: Optional[float] = 1e-5, separate_validation=False, **kwargs):
+    def __init__(
+        self, *args, eps: Optional[float] = 1e-5, separate_validation=False, reward: Optional[str] = None, **kwargs
+    ):
+        """reward: None keeps the dataset's sparse reward, "zero" replaces it by 0 (trivial-reward IQL control)."""
+        assert reward in (None, "zero"), "Unknown reward " + str(reward)
         self.eps = eps
         self.separate_validation = separate_validation
+        self.reward = reward
         super().__init__(*args, **kwargs)
 
     def _data_generator(self):
@@ -79,6 +84,8 @@ class RobomimicDataset(ReplayBuffer):
 
             reward = np.concatenate(([0], f["data"][demo]["rewards"]), axis=0)
             reward = remove_float64(reward)
+            if self.reward == "zero":
+                reward = np.zeros_like(reward)
 
             done = np.concatenate(([0], f["data"][demo]["dones"]), axis=0).astype(np.bool_)
             done[-1] = True

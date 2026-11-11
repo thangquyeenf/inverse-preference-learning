@@ -22,6 +22,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.append(str(Path(__file__).parent))
+import run_two_phase  # noqa: E402
 from run_two_phase import POOL_KEYS, pool_path, train, train_config  # noqa: E402
 
 CONDITIONS = ("iql_zero", "iql_random", "ipl_random_labels", "ipl_uniform")
@@ -33,6 +34,12 @@ def iql_config(task, seed, total_steps, eval_freq, reward):
     config["alg"] = "IQL"
     config["alg_kwargs"] = {k: alg_kwargs[k] for k in ("tau", "beta", "expectile", "offline_steps", "random_steps")}
     replay_kwargs = config["dataset_kwargs"]["replay_kwargs"]
+    if run_two_phase.DOMAIN == "robomimic":  # Every demo of the hdf5, as in the IPL runs
+        assert reward == "zero", "robomimic supports only the zero-reward control"
+        config["dataset"] = "RobomimicDataset"
+        config["dataset_kwargs"] = dict(path=replay_kwargs["path"], batch_size=replay_kwargs["batch_size"],
+                                        discount=config["dataset_kwargs"]["discount"], distributed=False, reward=reward)
+        return config
     config["dataset"] = "SegmentPoolReplay"
     config["dataset_kwargs"] = dict(path=str(pool_path(task)), batch_size=replay_kwargs["batch_size"],
                                     discount=config["dataset_kwargs"]["discount"], reward=reward, reward_seed=seed)
@@ -60,8 +67,12 @@ if __name__ == "__main__":
     parser.add_argument("--steps", type=int, default=200000)
     parser.add_argument("--jobs", type=int, default=9)
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--eval-freq", type=int, default=2500)
+    parser.add_argument("--domain", type=str, default="metaworld", choices=list(run_two_phase.STATIC_CONFIGS))
+    parser.add_argument("--pool-tag", type=str, default="", help="See run_two_phase.py, e.g. _human on robomimic")
     args = parser.parse_args()
-    eval_freq = min(2500, args.steps)
+    run_two_phase.DOMAIN, run_two_phase.POOL_TAG = args.domain, args.pool_tag
+    eval_freq = min(args.eval_freq, args.steps)
 
     def run(job):
         task, seed, condition = job
