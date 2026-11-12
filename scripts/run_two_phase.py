@@ -106,6 +106,30 @@ def train(path, config, device):
     return f"{'ok' if ret.returncode == 0 else 'FAIL(' + str(ret.returncode) + ')'} {path}"
 
 
+def select_multiround(method, task, pool, warmup, candidates, k, seed, rng, eta):
+    """Chooses k pairs in equal chunks. Before each chunk the proxy is retrained on the warm-start labels plus the labels
+    of every pair chosen so far (read from the pool, as a teacher would answer them), and the chunk is chosen from the
+    remaining candidates. Round 0 uses the same proxy seed as the one-shot methods. Returns pool indices."""
+    from research.algs import batch_selection, proxy_reward
+
+    base, rounds = batch_selection.MULTIROUND[method]
+    with np.load(pool_path(task)) as data:
+        labels = data["label"]
+    chosen = np.zeros(0, dtype=int)
+    for r in range(rounds):
+        revealed = np.concatenate([warmup, chosen])
+        labeled = {key: v[revealed] for key, v in pool.items()}
+        labeled["label"] = labels[revealed]
+        members = proxy_reward.train_proxy(labeled, seed=seed + 1000 * r)
+        rest = np.setdiff1d(candidates, chosen)
+        stats = {"probs": np.zeros((1, len(rest)))}  # select() only reads the number of candidates from it
+        for i in (1, 2):
+            stats[f"proxy_return_{i}"] = proxy_reward.segment_returns(members, pool[f"obs_{i}"][rest], pool[f"action_{i}"][rest])
+        size = k * (r + 1) // rounds - len(chosen)
+        chosen = np.concatenate([chosen, rest[batch_selection.select(base, stats, size, rng, eta=eta)]])
+    return chosen
+
+
 def select(run_dir, task, budget, seed, methods, eta):
     """Runs every selection method with the phase 1 model. Writes selection/<method>.npz and .npy (pool indices)."""
     import torch
@@ -155,7 +179,10 @@ def select(run_dir, task, budget, seed, methods, eta):
     k = budget - len(warmup)
     for m in todo:
         rng = np.random.default_rng(seed)
-        chosen = candidates[batch_selection.select(m, stats, k, rng, eta=eta)]
+        if m in batch_selection.MULTIROUND:
+            chosen = select_multiround(m, task, pool, warmup, candidates, k, seed, rng, eta)
+        else:
+            chosen = candidates[batch_selection.select(m, stats, k, rng, eta=eta)]
         assert len(np.intersect1d(chosen, warmup)) == 0 and len(np.unique(chosen)) == k
         idxs = np.concatenate([warmup, chosen])
         np.save(sel_dir / f"{m}.npy", idxs)
@@ -164,13 +191,14 @@ def select(run_dir, task, budget, seed, methods, eta):
 
 
 if __name__ == "__main__":
-    from research.algs.batch_selection import METHODS, ROUND2_METHODS, ROUND3_METHODS
+    from research.algs.batch_selection import METHODS, ROUND2_METHODS, ROUND3_METHODS, ROUND9_METHODS
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=str, default="output/metaworld_two_phase")
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--methods", nargs="+", default=METHODS, help="Also accepts " + " ".join(ROUND2_METHODS + ROUND3_METHODS))
+    parser.add_argument("--methods", nargs="+", default=METHODS,
+                        help="Also accepts " + " ".join(ROUND2_METHODS + ROUND3_METHODS + ROUND9_METHODS))
     parser.add_argument("--tasks", nargs="+", default=["drawer-open", "button-press"])
     parser.add_argument("--budgets", nargs="+", type=int, default=[250, 500, 1000])
     parser.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3, 4, 5])
